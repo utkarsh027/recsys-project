@@ -1,119 +1,86 @@
-import tensorflow as tf
-import numpy as np
+import torch
+import torch.nn as nn
 
 
-def build_user_tower(num_users, embedding_dim=64):
-    user_input       = tf.keras.Input(shape=(1,),  name="user_idx")
-    mean_rating      = tf.keras.Input(shape=(1,),  name="user_mean_rating")
-    rating_count     = tf.keras.Input(shape=(1,),  name="user_rating_count")
-    rating_std       = tf.keras.Input(shape=(1,),  name="user_rating_std")
+class UserTower(nn.Module):
+    def __init__(self, num_users, embedding_dim=64):
+        super().__init__()
+        self.embedding = nn.Embedding(num_users, embedding_dim)
+        self.network = nn.Sequential(
+            nn.Linear(embedding_dim + 3, 128),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, 32)
+        )
 
-    user_embedding = tf.keras.layers.Embedding(
-        num_users, embedding_dim, name="user_embedding"
-    )(user_input)
-    user_embedding = tf.keras.layers.Flatten()(user_embedding)
-
-    user_features = tf.keras.layers.Concatenate()([
-        user_embedding, mean_rating, rating_count, rating_std
-    ])
-
-    x = tf.keras.layers.Dense(128, activation="relu")(user_features)
-    x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    x = tf.keras.layers.Dense(64, activation="relu")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
-    user_vector = tf.keras.layers.Dense(32, activation=None, name="user_vector")(x)
-
-    return tf.keras.Model(
-        inputs=[user_input, mean_rating, rating_count, rating_std],
-        outputs=user_vector,
-        name="user_tower"
-    )
+    def forward(self, user_idx, mean_rating, rating_count, rating_std):
+        emb = self.embedding(user_idx)
+        x   = torch.cat([emb, mean_rating, rating_count, rating_std], dim=1)
+        return self.network(x)
 
 
-def build_movie_tower(num_movies, genre_dim=20, embedding_dim=64):
-    movie_input  = tf.keras.Input(shape=(1,),         name="movie_idx")
-    genre_input  = tf.keras.Input(shape=(genre_dim,), name="genre_vector")
-    mean_rating  = tf.keras.Input(shape=(1,),         name="movie_mean_rating")
-    rating_count = tf.keras.Input(shape=(1,),         name="movie_rating_count")
+class MovieTower(nn.Module):
+    def __init__(self, num_movies, genre_dim=20, embedding_dim=64):
+        super().__init__()
+        self.embedding    = nn.Embedding(num_movies, embedding_dim)
+        self.genre_encode = nn.Sequential(nn.Linear(genre_dim, 32), nn.ReLU())
+        self.network = nn.Sequential(
+            nn.Linear(embedding_dim + 32 + 2, 128),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, 32)
+        )
 
-    movie_embedding = tf.keras.layers.Embedding(
-        num_movies, embedding_dim, name="movie_embedding"
-    )(movie_input)
-    movie_embedding = tf.keras.layers.Flatten()(movie_embedding)
-
-    genre_encoded = tf.keras.layers.Dense(32, activation="relu")(genre_input)
-
-    movie_features = tf.keras.layers.Concatenate()([
-        movie_embedding, genre_encoded, mean_rating, rating_count
-    ])
-
-    x = tf.keras.layers.Dense(128, activation="relu")(movie_features)
-    x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    x = tf.keras.layers.Dense(64, activation="relu")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
-    movie_vector = tf.keras.layers.Dense(32, activation=None, name="movie_vector")(x)
-
-    return tf.keras.Model(
-        inputs=[movie_input, genre_input, mean_rating, rating_count],
-        outputs=movie_vector,
-        name="movie_tower"
-    )
+    def forward(self, movie_idx, genre_vector, mean_rating, rating_count):
+        emb   = self.embedding(movie_idx)
+        genre = self.genre_encode(genre_vector)
+        x     = torch.cat([emb, genre, mean_rating, rating_count], dim=1)
+        return self.network(x)
 
 
-def build_two_tower_model(num_users, num_movies, genre_dim=20, embedding_dim=64):
-    user_tower  = build_user_tower(num_users, embedding_dim)
-    movie_tower = build_movie_tower(num_movies, genre_dim, embedding_dim)
+class TwoTowerModel(nn.Module):
+    def __init__(self, num_users, num_movies, genre_dim=20, embedding_dim=64):
+        super().__init__()
+        self.user_tower  = UserTower(num_users, embedding_dim)
+        self.movie_tower = MovieTower(num_movies, genre_dim, embedding_dim)
+        self.output = nn.Sequential(
+            nn.Linear(2, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()
+        )
 
-    user_idx         = tf.keras.Input(shape=(1,),         name="user_idx")
-    user_mean_rating = tf.keras.Input(shape=(1,),         name="user_mean_rating")
-    user_rating_count= tf.keras.Input(shape=(1,),         name="user_rating_count")
-    user_rating_std  = tf.keras.Input(shape=(1,),         name="user_rating_std")
-    movie_idx        = tf.keras.Input(shape=(1,),         name="movie_idx")
-    genre_vector     = tf.keras.Input(shape=(genre_dim,), name="genre_vector")
-    movie_mean_rating= tf.keras.Input(shape=(1,),         name="movie_mean_rating")
-    movie_rating_count=tf.keras.Input(shape=(1,),         name="movie_rating_count")
-    recency          = tf.keras.Input(shape=(1,),         name="recency")
+    def forward(self, user_idx, user_mean, user_count, user_std,
+                movie_idx, genre_vector, movie_mean, movie_count, recency):
+        user_vec  = self.user_tower(user_idx, user_mean, user_count, user_std)
+        movie_vec = self.movie_tower(movie_idx, genre_vector, movie_mean, movie_count)
 
-    user_vector = user_tower([
-        user_idx, user_mean_rating, user_rating_count, user_rating_std
-    ])
-    movie_vector = movie_tower([
-        movie_idx, genre_vector, movie_mean_rating, movie_rating_count
-    ])
+        user_vec  = nn.functional.normalize(user_vec,  dim=1)
+        movie_vec = nn.functional.normalize(movie_vec, dim=1)
 
-    dot_product = tf.keras.layers.Dot(axes=1, normalize=True)(
-        [user_vector, movie_vector]
-    )
-
-    combined = tf.keras.layers.Concatenate()([dot_product, recency])
-    x = tf.keras.layers.Dense(16, activation="relu")(combined)
-    output = tf.keras.layers.Dense(1, activation="sigmoid", name="output")(x)
-
-    model = tf.keras.Model(
-        inputs=[
-            user_idx, user_mean_rating, user_rating_count, user_rating_std,
-            movie_idx, genre_vector, movie_mean_rating, movie_rating_count,
-            recency
-        ],
-        outputs=output,
-        name="two_tower_model"
-    )
-
-    return model, user_tower, movie_tower
-
-
-def get_model_summary(num_users=610, num_movies=9742):
-    model, user_tower, movie_tower = build_two_tower_model(num_users, num_movies)
-    print("=== USER TOWER ===")
-    user_tower.summary()
-    print("\n=== MOVIE TOWER ===")
-    movie_tower.summary()
-    print("\n=== FULL TWO-TOWER MODEL ===")
-    model.summary()
-    return model
+        dot = (user_vec * movie_vec).sum(dim=1, keepdim=True)
+        x   = torch.cat([dot, recency], dim=1)
+        return self.output(x)
 
 
 if __name__ == "__main__":
-    get_model_summary()
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    model = TwoTowerModel(610, 9724, 20, 64).to(device)
+
+    total  = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total params:     {total:,}")
+    print(f"Trainable params: {trainable:,}")
+    print(f"User tower:       {sum(p.numel() for p in model.user_tower.parameters()):,}")
+    print(f"Movie tower:      {sum(p.numel() for p in model.movie_tower.parameters()):,}")
+    print("\nTwo-tower model built successfully on", device)
