@@ -1,6 +1,6 @@
 # Production-Scale Recommendation System
 
-A production-ready recommendation engine that trains and compares two models — a **Gradient Boosting baseline** and a **Two-Tower Neural Network** — with a full MLOps pipeline, A/B testing, and real-time serving. Designed to mirror how recommendation systems work at companies like Amazon, Flipkart, and YouTube.
+A production-ready recommendation engine that trains and compares two models — a **Gradient Boosting baseline** and a **Two-Tower Neural Network** — with a full MLOps pipeline, statistically validated A/B testing, and real-time serving. Designed to mirror how recommendation systems work at companies like Amazon, Flipkart, and YouTube.
 
 ## Architecture
 
@@ -20,30 +20,34 @@ A production-ready recommendation engine that trains and compares two models —
 ```
 recsys-project/
 ├── data/
-│   ├── raw/                        # Downloaded MovieLens dataset
-│   └── processed/                  # Parquet features + genre matrix
+│   ├── raw/                          # Downloaded MovieLens dataset
+│   └── processed/                    # Parquet features + genre matrix
 │       ├── interactions.parquet
 │       ├── movie_features.parquet
 │       ├── user_features.parquet
-│       ├── genre_matrix.npy        # 9742 × 20 multi-hot genre vectors
+│       ├── genre_matrix.npy          # 9742 × 20 multi-hot genre vectors
 │       └── genre_vocab.json
 ├── data/models/
-│   ├── gb_model.pkl                # Trained gradient boosting model
-│   ├── scaler.pkl                  # Feature scaler
-│   └── two_tower_final.pt          # Trained PyTorch two-tower model
+│   ├── gb_model.pkl                  # Trained gradient boosting model
+│   ├── scaler.pkl                    # Feature scaler
+│   └── two_tower_final.pt            # Trained PyTorch two-tower model
 ├── notebooks/
-│   ├── 01_eda.ipynb                # Exploratory data analysis
-│   └── 02_model.ipynb              # Model experiments
+│   ├── 01_eda.ipynb                  # Exploratory data analysis
+│   └── 02_model.ipynb                # Model experiments
 ├── src/
-│   ├── data_loader.py              # Idempotent dataset download
+│   ├── data_loader.py                # Idempotent dataset download
 │   ├── features/
-│   │   └── feature_engineering.py # Full feature pipeline
+│   │   └── feature_engineering.py   # Full feature pipeline
 │   ├── models/
-│   │   ├── two_tower.py            # PyTorch two-tower architecture
-│   │   ├── train.py                # Gradient boosting training
-│   │   └── train_neural.py         # Neural model training on MPS GPU
-│   └── api/                        # FastAPI serving layer
-└── monitoring/                     # EDA plots + Evidently AI drift reports
+│   │   ├── two_tower.py              # PyTorch two-tower architecture
+│   │   ├── train.py                  # Gradient boosting training
+│   │   ├── train_neural.py           # Neural model training on MPS GPU
+│   │   └── ab_test.py                # A/B test with ranking metrics
+│   └── api/                          # FastAPI serving layer
+└── monitoring/                       # EDA plots · A/B results · drift reports
+    ├── ab_test_results.csv
+    ├── ab_test_comparison.png
+    └── ab_test_ndcg_dist.png
 ```
 
 ## Progress
@@ -52,26 +56,54 @@ recsys-project/
 |---|---|---|
 | Phase 1 | ✅ Complete | Project setup, virtual environment, dependencies, Git |
 | Phase 2 | ✅ Complete | Data ingestion, EDA, 5 visualisations, modelling decisions |
-| Phase 3 | ✅ Complete | Feature engineering, two-tower neural model, GB baseline, model comparison |
-| Phase 4 | 🔄 Up next | A/B test: Precision@K, NDCG@10, statistical significance |
-| Phase 5 | ⏳ Pending | FastAPI serving and Docker containerisation |
+| Phase 3 | ✅ Complete | Feature engineering, two-tower neural model, GB baseline |
+| Phase 4 | ✅ Complete | A/B test — Precision@K, NDCG@10, statistical significance |
+| Phase 5 | 🔄 Up next | FastAPI serving and Docker containerisation |
 | Phase 6 | ⏳ Pending | Drift monitoring with Evidently AI |
 
-## Model Comparison — Phase 3 Results
+---
+
+## Phase 4 — A/B Test Results — 7 July 2026
+
+**Evaluation strategy:** Leave-one-out with 20% holdout — for each of 465 users, 20% of their liked movies were held out as ground truth. Both models scored all unseen movies and we measured whether the holdout movies appeared in the top-10 recommendations.
+
+### Ranking metrics — the real test
+
+| Metric | Gradient Boosting | Two-Tower Neural | Improvement | Winner |
+|---|---|---|---|---|
+| Precision@10 | 0.0004 | 0.0092 | +2,050% | Neural ✅ |
+| Recall@10 | 0.0000 | 0.0069 | +17,626% | Neural ✅ |
+| NDCG@10 | 0.0003 | 0.0112 | +3,195% | Neural ✅ |
+| Users with hit in top-10 | 1 / 465 | 38 / 465 | 38× more | Neural ✅ |
+
+**Statistical significance:** Paired t-test on NDCG@10 → t = −5.19, **p = 0.0000** ✅ Significant at p < 0.05
+
+### The metric inversion — most important insight
+
+Gradient Boosting had higher AUC (0.84 vs 0.82) in Phase 3 — yet the neural model won on every ranking metric in Phase 4 by thousands of percent. AUC measures global pairwise ranking across all movies. NDCG@10 measures whether the best movies appear in the top-10 slots the user actually sees. Neural embeddings — by learning the direction of user taste in vector space — naturally concentrate the most relevant movies at the very top of the ranked list. GB cannot do this because it has no shared embedding space between users and movies.
+
+**Interview line:** *"Our A/B test revealed a metric inversion — GB had higher AUC but the neural model won on every ranking metric with p=0.0000. This is why AUC alone is insufficient for recommendation evaluation. We deploy based on NDCG@10, not AUC."*
+
+---
+
+## Phase 3 — Model Comparison
 
 Two models trained and evaluated on the same 80/20 stratified train/test split.
 
 | Metric | Gradient Boosting | Two-Tower Neural | Winner |
 |---|---|---|---|
-| AUC | **0.8403** | 0.8211 | GB (small dataset advantage) |
+| AUC | **0.8403** | 0.8211 | GB (small dataset) |
 | Precision | **0.7386** | 0.7203 | GB |
 | Recall | **0.7627** | 0.7574 | GB |
 | Cold start | ❌ Fails | ✅ Handles via embedding defaults | Neural |
 | New movies | ❌ Needs retraining | ✅ Movie tower runs instantly | Neural |
 | Scalability | ❌ Scores all movies linearly | ✅ ANN vector search in <10ms | Neural |
 | Explainability | ✅ Feature importance | ❌ Black box embeddings | GB |
+| NDCG@10 (A/B test) | 0.0003 | **0.0112** | **Neural ✅** |
 
-**Why GB wins on AUC but neural wins in production:** Tree models excel on tabular data at 100k scale. With 10M+ interactions (real production scale), neural embeddings get progressively richer and significantly outperform tree models — which is exactly why YouTube, Amazon, and Spotify all use two-tower architectures, not gradient boosting.
+**Why GB wins on AUC but neural wins in production:** Tree models excel on tabular data at 100k scale. With 10M+ interactions, neural embeddings get progressively richer while GB plateaus — which is why YouTube, Amazon, and Spotify all use two-tower architectures.
+
+---
 
 ## Two-Tower Neural Architecture
 
@@ -101,7 +133,7 @@ User inputs                          Movie inputs
 
 Total parameters: **704,929** — trained on Apple M2 GPU via MPS in ~90 seconds.
 
-## Neural Model Training Curve
+### Neural model training curve
 
 | Epoch | Train Loss | Val AUC | Notes |
 |---|---|---|---|
@@ -115,9 +147,11 @@ Total parameters: **704,929** — trained on Apple M2 GPU via MPS in ~90 seconds
 | 8 | 0.4994 | 0.8198 | No improvement |
 | 9 | 0.4940 | 0.8188 | Early stopping triggered |
 
+---
+
 ## EDA Key Findings
 
-Analysis of 100,836 ratings from 610 users across 9,724 movies revealed five critical insights that directly shaped modelling decisions:
+Analysis of 100,836 ratings from 610 users across 9,724 movies revealed five insights that directly shaped modelling decisions:
 
 | Finding | Data Evidence | Modelling Decision |
 |---|---|---|
@@ -127,23 +161,35 @@ Analysis of 100,836 ratings from 610 users across 9,724 movies revealed five cri
 | Temporal drift | Ratings span 1996–2018 (22 years) | Timestamp encoded as recency feature |
 | Multi-label genres | 20 genres, pipe-separated per movie | Multi-hot encoding + dedicated genre Dense layer |
 
+---
+
+## Phase 4 Progress — 7 July 2026
+
+**What was built:**
+- `src/models/ab_test.py` — full A/B evaluation with leave-one-out 20% holdout strategy, Precision@10, Recall@10, NDCG@10, paired t-test, MLflow logging, and two visualisation plots
+- `monitoring/ab_test_results.csv` — per-user scores for all 465 users across both models
+- `monitoring/ab_test_comparison.png` — bar chart comparing all three ranking metrics
+- `monitoring/ab_test_ndcg_dist.png` — NDCG@10 distribution per user + difference histogram
+
+**Key findings:**
+- Neural model found relevant movies for 38/465 users in top-10 vs GB's 1/465
+- p = 0.0000 — result is not random noise
+- Metric inversion confirmed: AUC favoured GB, all ranking metrics favour Neural
+- Standard evaluation for recommendation systems is NDCG@10, not AUC
+
 ## Phase 3 Progress — 5 July 2026
 
 **What was built:**
-
-- `src/features/feature_engineering.py` — full pipeline: user behavioural stats, multi-hot genre vectors (9742×20), log1p scaling, recency normalisation, binary label creation, parquet + npy output
-- `src/models/two_tower.py` — PyTorch two-tower architecture with user tower, movie tower, cosine similarity, recency injection, sigmoid output
-- `src/models/train_neural.py` — PyTorch training loop with MPS GPU acceleration, early stopping, LR scheduling, MLflow tracking
+- `src/features/feature_engineering.py` — full pipeline: user behavioural stats, multi-hot genre vectors (9742×20), log1p scaling, recency normalisation, binary label, parquet + npy output
+- `src/models/two_tower.py` — PyTorch two-tower architecture
+- `src/models/train_neural.py` — PyTorch training loop with MPS GPU, early stopping, LR scheduling, MLflow tracking
 - `src/models/train.py` — Gradient Boosting baseline with StandardScaler and MLflow tracking
-- `data/models/two_tower_final.pt` — best neural model weights (epoch 6, AUC 0.8211)
-- `data/models/gb_model.pkl` — trained GB baseline (AUC 0.8403)
 
 **Key engineering decisions:**
-
-- Genre vectors saved as `.npy` because numpy arrays do not serialise cleanly in pandas DataFrames
+- Genre vectors saved as `.npy` — numpy arrays do not serialise cleanly in pandas DataFrames
 - PyTorch chosen over TensorFlow — MPS GPU gave 10x speedup on Apple Silicon
-- Binary label (rating ≥ 4.0) rather than regression — mirrors production framing at YouTube and Spotify
-- Cosine similarity via normalised dot product — magnitude-invariant, fair across users with different activity levels
+- Binary label (rating ≥ 4.0) — mirrors production framing at YouTube and Spotify
+- Cosine similarity via normalised dot product — magnitude-invariant
 
 ## Phase 2 Progress — 2 July 2026
 
