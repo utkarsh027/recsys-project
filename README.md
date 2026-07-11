@@ -1,6 +1,6 @@
 # Production-Scale Recommendation System
 
-A production-ready recommendation engine that trains and compares two models — a **Gradient Boosting baseline** and a **Two-Tower Neural Network** — with a full MLOps pipeline, statistically validated A/B testing, and real-time serving. Designed to mirror how recommendation systems work at companies like Amazon, Flipkart, and YouTube.
+A production-ready recommendation engine that trains and compares two models — a **Gradient Boosting baseline** and a **Two-Tower Neural Network** — with a full MLOps pipeline, statistically validated A/B testing, and real-time serving via FastAPI and Docker. Designed to mirror how recommendation systems work at companies like Amazon, Flipkart, and YouTube.
 
 ## Architecture
 
@@ -11,9 +11,49 @@ A production-ready recommendation engine that trains and compares two models —
 | Feature engineering | pandas · numpy · multi-hot genre encoding |
 | Experiment tracking | MLflow |
 | API serving | FastAPI + Uvicorn |
-| Containerisation | Docker |
+| Containerisation | Docker + Docker Compose |
 | Drift monitoring | Evidently AI |
 | Dataset | MovieLens Small (100k ratings, 610 users, 9,724 movies) |
+
+## Quick Start — Run the API
+
+```bash
+git clone https://github.com/utkarsh027/recsys-project.git
+cd recsys-project
+docker-compose up --build
+```
+
+Then call the API:
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Get top-5 recommendations for User 1 using neural model
+curl -X POST http://localhost:8000/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": 1, "model": "neural", "top_k": 5}'
+```
+
+Example response:
+```json
+{
+  "user_id": 1,
+  "model": "neural",
+  "top_k": 5,
+  "recommendations": [
+    {"rank": 1, "movie_id": 3160, "title": "Magnolia (1999)",    "score": 0.9108, "genres": "Drama"},
+    {"rank": 2, "movie_id": 64614,"title": "Gran Torino (2008)", "score": 0.9103, "genres": "Crime|Drama"},
+    {"rank": 3, "movie_id": 1958, "title": "Terms of Endearment (1983)", "score": 0.9101, "genres": "Comedy|Drama"},
+    {"rank": 4, "movie_id": 2300, "title": "Producers, The (1968)", "score": 0.9099, "genres": "Comedy"},
+    {"rank": 5, "movie_id": 2067, "title": "Doctor Zhivago (1965)", "score": 0.9099, "genres": "Drama|Romance|War"}
+  ]
+}
+```
+
+Interactive API docs available at **http://localhost:8000/docs**
+
+---
 
 ## Project Structure
 
@@ -43,12 +83,20 @@ recsys-project/
 │   │   ├── train.py                  # Gradient boosting training
 │   │   ├── train_neural.py           # Neural model training on MPS GPU
 │   │   └── ab_test.py                # A/B test with ranking metrics
-│   └── api/                          # FastAPI serving layer
-└── monitoring/                       # EDA plots · A/B results · drift reports
-    ├── ab_test_results.csv
-    ├── ab_test_comparison.png
-    └── ab_test_ndcg_dist.png
+│   └── api/
+│       ├── main.py                   # FastAPI application
+│       ├── schemas.py                # Pydantic request/response models
+│       └── recommender.py            # Model loading and inference
+├── monitoring/                       # EDA plots · A/B results · drift reports
+│   ├── ab_test_results.csv
+│   ├── ab_test_comparison.png
+│   └── ab_test_ndcg_dist.png
+├── Dockerfile                        # Container definition
+├── docker-compose.yml                # One-command deployment
+└── requirements_api.txt              # API dependencies
 ```
+
+---
 
 ## Progress
 
@@ -58,16 +106,51 @@ recsys-project/
 | Phase 2 | ✅ Complete | Data ingestion, EDA, 5 visualisations, modelling decisions |
 | Phase 3 | ✅ Complete | Feature engineering, two-tower neural model, GB baseline |
 | Phase 4 | ✅ Complete | A/B test — Precision@K, NDCG@10, statistical significance |
-| Phase 5 | 🔄 Up next | FastAPI serving and Docker containerisation |
-| Phase 6 | ⏳ Pending | Drift monitoring with Evidently AI |
+| Phase 5 | ✅ Complete | FastAPI serving + Docker containerisation + live demo |
+| Phase 6 | 🔄 Up next | Drift monitoring with Evidently AI |
 
 ---
 
-## Phase 4 — A/B Test Results — 7 July 2026
+## Phase 5 — API Endpoints — 12 July 2026
 
-**Evaluation strategy:** Leave-one-out with 20% holdout — for each of 465 users, 20% of their liked movies were held out as ground truth. Both models scored all unseen movies and we measured whether the holdout movies appeared in the top-10 recommendations.
+| Endpoint | Method | Description |
+|---|---|---|
+| `/` | GET | API info and available endpoints |
+| `/health` | GET | Model status, AUC scores, version |
+| `/recommend` | POST | Top-K personalised movie recommendations |
+| `/docs` | GET | Auto-generated interactive API documentation |
 
-### Ranking metrics — the real test
+### Request schema
+
+```json
+{
+  "user_id": 1,        // int, required, 1–610
+  "model":   "neural", // "neural" or "gb", default "neural"
+  "top_k":   10        // int, 1–50, default 10
+}
+```
+
+### What happens inside the API
+
+1. Pydantic validates the request — invalid `user_id` or `model` values are rejected with a clear 422 error before the model is ever called
+2. The recommender loads both models **once at startup** and keeps them in memory — no reloading per request
+3. For neural model: scores all unseen movies via the two-tower forward pass, sorts by cosine similarity score, returns top-K with titles and genres
+4. For GB model: constructs tabular feature matrix, scales it, runs predict_proba, returns top-K
+
+### Docker
+
+The entire application — Python, PyTorch, models, data — is packaged into a single Docker container. Zero setup required:
+
+```bash
+docker-compose up --build   # first run ~5 minutes (downloading dependencies)
+docker-compose up           # subsequent runs ~30 seconds
+```
+
+---
+
+## Phase 4 — A/B Test Results
+
+**Evaluation strategy:** Leave-one-out with 20% holdout — for each of 465 users, 20% of their liked movies were held out as ground truth. Both models scored all unseen movies and we measured whether the holdout movies appeared in top-10 recommendations.
 
 | Metric | Gradient Boosting | Two-Tower Neural | Improvement | Winner |
 |---|---|---|---|---|
@@ -76,19 +159,17 @@ recsys-project/
 | NDCG@10 | 0.0003 | 0.0112 | +3,195% | Neural ✅ |
 | Users with hit in top-10 | 1 / 465 | 38 / 465 | 38× more | Neural ✅ |
 
-**Statistical significance:** Paired t-test on NDCG@10 → t = −5.19, **p = 0.0000** ✅ Significant at p < 0.05
+**Statistical significance:** Paired t-test on NDCG@10 → t = −5.19, **p = 0.0000** ✅
 
-### The metric inversion — most important insight
+### The metric inversion
 
-Gradient Boosting had higher AUC (0.84 vs 0.82) in Phase 3 — yet the neural model won on every ranking metric in Phase 4 by thousands of percent. AUC measures global pairwise ranking across all movies. NDCG@10 measures whether the best movies appear in the top-10 slots the user actually sees. Neural embeddings — by learning the direction of user taste in vector space — naturally concentrate the most relevant movies at the very top of the ranked list. GB cannot do this because it has no shared embedding space between users and movies.
+GB had higher AUC (0.84 vs 0.82) in Phase 3 — yet the neural model won every ranking metric by thousands of percent. AUC measures global pairwise ranking. NDCG@10 measures whether the best movies appear in the top-10 slots the user actually sees. Neural embeddings naturally concentrate the most relevant movies at the very top. GB cannot do this — it has no shared embedding space between users and movies.
 
-**Interview line:** *"Our A/B test revealed a metric inversion — GB had higher AUC but the neural model won on every ranking metric with p=0.0000. This is why AUC alone is insufficient for recommendation evaluation. We deploy based on NDCG@10, not AUC."*
+**Interview line:** *"Our A/B test revealed a metric inversion — GB had higher AUC but the neural model won every ranking metric with p=0.0000. This is why AUC alone is insufficient for recommendation evaluation."*
 
 ---
 
 ## Phase 3 — Model Comparison
-
-Two models trained and evaluated on the same 80/20 stratified train/test split.
 
 | Metric | Gradient Boosting | Two-Tower Neural | Winner |
 |---|---|---|---|
@@ -98,10 +179,7 @@ Two models trained and evaluated on the same 80/20 stratified train/test split.
 | Cold start | ❌ Fails | ✅ Handles via embedding defaults | Neural |
 | New movies | ❌ Needs retraining | ✅ Movie tower runs instantly | Neural |
 | Scalability | ❌ Scores all movies linearly | ✅ ANN vector search in <10ms | Neural |
-| Explainability | ✅ Feature importance | ❌ Black box embeddings | GB |
 | NDCG@10 (A/B test) | 0.0003 | **0.0112** | **Neural ✅** |
-
-**Why GB wins on AUC but neural wins in production:** Tree models excel on tabular data at 100k scale. With 10M+ interactions, neural embeddings get progressively richer while GB plateaus — which is why YouTube, Amazon, and Spotify all use two-tower architectures.
 
 ---
 
@@ -133,7 +211,7 @@ User inputs                          Movie inputs
 
 Total parameters: **704,929** — trained on Apple M2 GPU via MPS in ~90 seconds.
 
-### Neural model training curve
+### Training curve
 
 | Epoch | Train Loss | Val AUC | Notes |
 |---|---|---|---|
@@ -143,15 +221,11 @@ Total parameters: **704,929** — trained on Apple M2 GPU via MPS in ~90 seconds
 | 4 | 0.5291 | 0.8190 | Fine-tuning |
 | 5 | 0.5181 | 0.8201 | Converging |
 | **6** | **0.5108** | **0.8211** | **Best model — saved** |
-| 7 | 0.5043 | 0.8202 | Plateau |
-| 8 | 0.4994 | 0.8198 | No improvement |
-| 9 | 0.4940 | 0.8188 | Early stopping triggered |
+| 7–9 | — | plateau | Early stopping triggered at epoch 9 |
 
 ---
 
 ## EDA Key Findings
-
-Analysis of 100,836 ratings from 610 users across 9,724 movies revealed five insights that directly shaped modelling decisions:
 
 | Finding | Data Evidence | Modelling Decision |
 |---|---|---|
@@ -163,40 +237,39 @@ Analysis of 100,836 ratings from 610 users across 9,724 movies revealed five ins
 
 ---
 
+## Phase 5 Progress — 12 July 2026
+
+**What was built:**
+- `src/api/schemas.py` — Pydantic request/response schemas with field validation (user_id 1–610, model neural/gb, top_k 1–50)
+- `src/api/recommender.py` — model loading at startup, user feature lookup, unseen movie filtering, neural + GB scoring
+- `src/api/main.py` — FastAPI app with lifespan context manager, three endpoints, automatic /docs generation
+- `Dockerfile` — Python 3.11 slim, PyTorch CPU, all dependencies, model files copied into container
+- `docker-compose.yml` — port mapping, volume mount, health check, restart policy
+- `requirements_api.txt` — minimal dependency set for API serving only
+
+**Key engineering decisions:**
+- Models loaded once at startup via FastAPI lifespan — not reloaded per request
+- PyTorch CPU in Docker — MPS is Mac-specific, CPU works everywhere for serving
+- Pydantic field validators reject bad inputs before model code runs
+- Health check endpoint monitors liveness every 30 seconds
+
 ## Phase 4 Progress — 7 July 2026
 
 **What was built:**
-- `src/models/ab_test.py` — full A/B evaluation with leave-one-out 20% holdout strategy, Precision@10, Recall@10, NDCG@10, paired t-test, MLflow logging, and two visualisation plots
-- `monitoring/ab_test_results.csv` — per-user scores for all 465 users across both models
-- `monitoring/ab_test_comparison.png` — bar chart comparing all three ranking metrics
-- `monitoring/ab_test_ndcg_dist.png` — NDCG@10 distribution per user + difference histogram
-
-**Key findings:**
-- Neural model found relevant movies for 38/465 users in top-10 vs GB's 1/465
-- p = 0.0000 — result is not random noise
-- Metric inversion confirmed: AUC favoured GB, all ranking metrics favour Neural
-- Standard evaluation for recommendation systems is NDCG@10, not AUC
+- `src/models/ab_test.py` — leave-one-out evaluation, Precision@10, Recall@10, NDCG@10, paired t-test, MLflow logging, two plots
+- `monitoring/ab_test_results.csv` — per-user scores for all 465 users
+- `monitoring/ab_test_comparison.png` — bar chart comparing all three metrics
+- `monitoring/ab_test_ndcg_dist.png` — NDCG@10 distribution + difference histogram
 
 ## Phase 3 Progress — 5 July 2026
 
 **What was built:**
-- `src/features/feature_engineering.py` — full pipeline: user behavioural stats, multi-hot genre vectors (9742×20), log1p scaling, recency normalisation, binary label, parquet + npy output
-- `src/models/two_tower.py` — PyTorch two-tower architecture
-- `src/models/train_neural.py` — PyTorch training loop with MPS GPU, early stopping, LR scheduling, MLflow tracking
-- `src/models/train.py` — Gradient Boosting baseline with StandardScaler and MLflow tracking
-
-**Key engineering decisions:**
-- Genre vectors saved as `.npy` — numpy arrays do not serialise cleanly in pandas DataFrames
-- PyTorch chosen over TensorFlow — MPS GPU gave 10x speedup on Apple Silicon
-- Binary label (rating ≥ 4.0) — mirrors production framing at YouTube and Spotify
-- Cosine similarity via normalised dot product — magnitude-invariant
+- `src/features/feature_engineering.py` — full pipeline: user behavioural stats, multi-hot genre vectors (9742×20), log1p scaling, recency, parquet + npy output
+- `src/models/two_tower.py` — PyTorch two-tower architecture (704,929 parameters)
+- `src/models/train_neural.py` — MPS GPU training with early stopping and MLflow tracking
+- `src/models/train.py` — Gradient Boosting baseline
 
 ## Phase 2 Progress — 2 July 2026
-
-**What was built:**
-- `src/data_loader.py` — idempotent download pipeline with automatic extraction and cleanup
-- `notebooks/01_eda.ipynb` — full exploratory analysis across ratings, users, movies, genres, and time
-- 5 production-quality visualisations saved to `monitoring/`
 
 **Dataset statistics:**
 
