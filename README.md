@@ -2,7 +2,7 @@
 
 <div align="center">
 
-A end-to-end production ML system that trains, compares, serves, and monitors two recommendation models — a **Gradient Boosting baseline** and a **Two-Tower Neural Network** — mirroring how recommendation systems work at Amazon, Flipkart, and YouTube.
+An end-to-end production ML system that trains, compares, serves, and monitors two recommendation models — a **Gradient Boosting baseline** and a **Two-Tower Neural Network** — mirroring how recommendation systems work at Amazon, Flipkart, and YouTube.
 
 **AUC 0.84 · NDCG@10 improvement +3,195% · p=0.0000 · Served via Docker · Drift monitored**
 
@@ -114,7 +114,7 @@ recsys-project/
 
 ---
 
-## Phase Progress
+## Phase Progress Overview
 
 | Phase | Status | What was built |
 |---|---|---|
@@ -127,30 +127,25 @@ recsys-project/
 
 ---
 
-## The Core Problem — Why This is Hard
+## Phase 1 — Project Setup
 
-With 610 users and 9,724 movies, the interaction matrix has **5,931,640 possible ratings**. Only 100,836 are observed — **98.3% of the matrix is empty**. Predicting what each user will like from this sparse signal is the fundamental recommendation challenge.
+**What was built:**
+- Python virtual environment (`venv`) for isolated dependency management
+- Modular folder structure: `data/`, `src/features/`, `src/models/`, `src/api/`, `monitoring/`, `notebooks/`
+- Git repository initialised with `.gitignore` excluding `venv/`, `__pycache__/`, raw data
+- `requirements.txt` frozen with `pip freeze` for full reproducibility
+- VS Code configured with Python, Pylance, Jupyter, GitLens extensions
 
-Traditional approaches fail:
-- **Nearest-neighbour**: most user pairs share zero common ratings — no signal to compare
-- **Popularity ranking**: recommends the same 15 blockbusters to everyone — useless personalisation
-- **Matrix factorisation**: breaks down at 98.3% sparsity with 610 users
-
-Our solution: **learned dense embeddings** via a two-tower neural network, mirroring the architecture YouTube published in their 2016 deep neural network paper.
+**Key decision:** Project structured before writing any ML code — separating data, features, models, and API concerns from day one, mirroring how production ML teams organise repositories.
 
 ---
 
-## Dataset — EDA Key Findings
+## Phase 2 — Data Ingestion & EDA
 
-Five findings from EDA directly drove five modelling decisions:
-
-| Finding | Evidence | Decision |
-|---|---|---|
-| 98.3% sparsity | 5.9M possible, 100k observed | Two-tower embeddings over nearest-neighbour |
-| Popularity bias | Top 15 rated = all pre-2000 classics | Neural model over pure collaborative filtering |
-| Power law users | 20 to 2,698 ratings per user | log1p scaling on count features |
-| Temporal drift | Ratings span 1996–2018 (22 years) | Recency feature (0–1 normalised timestamp) |
-| Multi-label genres | 20 genres, pipe-separated | Multi-hot encoding + dedicated genre Dense(32) layer |
+**What was built:**
+- `src/data_loader.py` — idempotent download pipeline for MovieLens Small dataset with automatic extraction and cleanup
+- `notebooks/01_eda.ipynb` — full exploratory analysis across ratings, users, movies, genres, and time
+- 5 production-quality visualisations saved to `monitoring/`
 
 **Dataset statistics:**
 
@@ -167,9 +162,23 @@ Total genres:         20
 Positive labels:      48,580  (48.2% — well balanced, no class weighting needed)
 ```
 
+**Five EDA findings that drove five modelling decisions:**
+
+| Finding | Evidence | Decision |
+|---|---|---|
+| 98.3% sparsity | 5.9M possible, 100k observed | Two-tower embeddings over nearest-neighbour |
+| Popularity bias | Top 15 rated = all pre-2000 classics | Neural model over pure collaborative filtering |
+| Power law users | 20 to 2,698 ratings per user | log1p scaling on count features |
+| Temporal drift | Ratings span 1996–2018 (22 years) | Recency feature (0–1 normalised timestamp) |
+| Multi-label genres | 20 genres, pipe-separated | Multi-hot encoding + dedicated genre Dense(32) layer |
+
+**Visualisations generated:** rating distribution, ratings per user (power law), genre distribution, ratings by year (temporal drift), top-15 most rated movies (popularity bias).
+
 ---
 
-## Feature Engineering
+## Phase 3 — Feature Engineering & Model Training
+
+### Feature Engineering
 
 Every interaction becomes a row of 28 numbers fed to the model:
 
@@ -190,9 +199,9 @@ Every interaction becomes a row of 28 numbers fed to the model:
 
 **Why binary label not rating regression?** Predicting 3.5 vs 4.0 is noise — the difference reflects mood, not true preference. Binary classification directly optimises for the business objective: will the user engage positively? This mirrors how YouTube and Spotify frame the problem.
 
----
+**Output artifacts:** `interactions.parquet` (100,836 × 15), `movie_features.parquet`, `user_features.parquet`, `genre_matrix.npy` (9,742 × 20), `genre_vocab.json`.
 
-## Two-Tower Neural Architecture
+### Two-Tower Neural Architecture
 
 ```
 User inputs                              Movie inputs
@@ -224,9 +233,9 @@ User inputs                              Movie inputs
 
 - **Separate towers**: user and movie towers are independent — movie vectors can be pre-computed once and cached. At inference, only the user tower runs per request.
 - **Cosine similarity via F.normalize**: normalises vectors to unit length before dot product. Magnitude-invariant — compares direction of taste, not data volume.
-- **Recency injected after dot product**: prevents temporal signal from distorting the embedding space. The model learns "this similarity score is from a recent interaction — weight it more."
+- **Recency injected after dot product**: prevents temporal signal from distorting the embedding space.
 - **No activation on final Dense(32)**: allows unbounded positive and negative values in embedding space. ReLU would destroy half the information capacity.
-- **Genre sub-network**: 20-dimensional genre vector passes through Dense(32) before joining the main flow — learns that Comedy|Romance together means something different than Comedy alone.
+- **Genre sub-network**: 20-dimensional genre vector passes through Dense(32) before joining the main flow.
 
 ### Training curve
 
@@ -242,9 +251,9 @@ User inputs                              Movie inputs
 | 8 | 0.4994 | 0.8198 | No improvement |
 | 9 | 0.4940 | 0.8188 | Early stopping triggered |
 
----
+### Gradient Boosting Baseline
 
-## Model Comparison
+200 trees, learning_rate=0.1, max_depth=5, subsample=0.8, trained on StandardScaler-normalised features in ~20 seconds on CPU.
 
 ### Phase 3 — Classification metrics (80/20 stratified split)
 
@@ -259,7 +268,18 @@ User inputs                              Movie inputs
 | Scale to 1B items | ❌ Linear scoring | ✅ ANN vector search <10ms | Neural |
 | Explainability | ✅ Feature importance | ❌ Black box embeddings | GB |
 
-### Phase 4 — Ranking metrics (leave-one-out, 465 users, K=10)
+**Key engineering decisions:**
+- PyTorch chosen over TensorFlow — MPS GPU gave 10× speedup on Apple Silicon vs CPU-only TensorFlow
+- Genre vectors saved as `.npy` — numpy arrays do not serialise cleanly in pandas Parquet columns
+- Both models tracked in MLflow with full hyperparameter and metric logging
+
+---
+
+## Phase 4 — A/B Testing
+
+**Evaluation strategy:** Leave-one-out with 20% holdout — for each of 465 users, 20% of their liked movies were held out as ground truth. Both models scored all unseen movies and we measured whether the holdout movies appeared in the top-10 recommendations.
+
+### Ranking metrics (K=10)
 
 | Metric | Gradient Boosting | Two-Tower Neural | Improvement | Winner |
 |---|---|---|---|---|
@@ -278,9 +298,13 @@ Neural embeddings learn the direction of taste in vector space — users and mov
 
 > *"Our A/B test revealed a metric inversion — GB had higher AUC but neural won every ranking metric with p=0.0000. This is why AUC alone is insufficient for recommendation evaluation. We deploy based on NDCG@10, not AUC."*
 
+**What was built:** `src/models/ab_test.py` — leave-one-out evaluation with Precision@10, Recall@10, NDCG@10, paired t-test, MLflow logging, and two visualisation plots (`ab_test_comparison.png`, `ab_test_ndcg_dist.png`).
+
 ---
 
-## API Endpoints
+## Phase 5 — FastAPI Serving & Docker
+
+### API Endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -305,9 +329,18 @@ Neural embeddings learn the direction of taste in vector space — users and mov
 - **Pydantic field validation** — user_id range, model enum, top_k bounds all validated before model code runs. Invalid requests return 422 with clear error message.
 - **Separate recommender class** — inference logic decoupled from routing logic. Easier to test, swap models, and add new models without touching API routes.
 
+### Docker
+
+- **Dockerfile** — `python:3.11-slim` base, gcc/curl installed, dependencies cached in separate layer from code, PyTorch CPU wheel (MPS unavailable in Linux containers)
+- **docker-compose.yml** — port mapping (8000:8000), volume mount for live data updates, restart policy, health check every 30s
+
+**What was built:** `src/api/schemas.py` (Pydantic validation), `src/api/recommender.py` (model loading + inference), `src/api/main.py` (FastAPI routes + lifespan), `Dockerfile`, `docker-compose.yml`, `requirements_api.txt`.
+
+**Verified working:** Live API tested with curl — returns real personalised recommendations, rejects invalid inputs with 422 errors, runs identically inside Docker container.
+
 ---
 
-## Drift Monitoring
+## Phase 6 — Drift Monitoring
 
 Evidently AI compares 5,000 samples from training data against 5,000 simulated production samples:
 
@@ -322,31 +355,11 @@ Evidently AI compares 5,000 samples from training data against 5,000 simulated p
 
 **What 4 drifted features means in production:** The model was calibrated on a world where users averaged 3.50 ratings. If users now average 3.80, the model's threshold for "liked" (≥ 4.0) is now underestimating positive sentiment. Combined with recency drift, this signals the model should be retrained on data from the past 6 months.
 
+**What was built:** `monitoring/drift_monitor.py` — builds a feature dataframe, simulates production drift, runs Evidently's `DataDriftPreset`, saves an HTML report, and prints a plain-text summary.
+
 **To view the full HTML report:**
 ```bash
 open monitoring/drift_report.html
-```
-
----
-
-## Resume Bullet Points
-
-```
-• Built a production-scale two-tower neural recommendation system on MovieLens
-  (100k ratings), achieving AUC 0.8211 via PyTorch on Apple M2 MPS GPU —
-  trained in 90 seconds with early stopping at epoch 6
-
-• Conducted statistically validated A/B test (n=465, leave-one-out) comparing
-  gradient boosting vs neural model — neural won NDCG@10 by +3,195% with
-  p=0.0000, demonstrating that AUC is insufficient for recommendation evaluation
-
-• Engineered complete feature pipeline: multi-hot genre vectors (9742×20),
-  log1p-scaled behavioural statistics, recency normalisation, binary implicit
-  feedback — all versioned as Parquet and NumPy artifacts
-
-• Built end-to-end MLOps pipeline: MLflow experiment tracking, FastAPI serving
-  with Pydantic validation, Docker containerisation, and Evidently AI drift
-  monitoring detecting 4 drifted features post-deployment
 ```
 
 ---
